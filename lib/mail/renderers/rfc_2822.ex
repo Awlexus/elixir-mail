@@ -150,18 +150,35 @@ defmodule Mail.Renderers.RFC2822 do
     [~s(boundary="#{value}") | render_subtypes(subtypes)]
   end
 
-  defp render_subtypes([{key, value} | subtypes]) do
-    key = String.replace(key, "_", "-")
-    value = encode_header_value(value, :quoted_printable)
+  defp render_subtypes([{key, %{value: value} = header} | subtypes]) do
+    encoding = Map.get(header, :encoding, "UTF-8")
+    locale = Map.get(header, :locale, "")
 
     value =
-      if value =~ ~r/[\s()<>@,;:\\<\/\[\]?=]/ do
-        "\"#{value}\""
-      else
-        value
-      end
+      value
+      |> URI.encode()
+      |> quote_if_necessary()
+
+    ["#{key}*=#{encoding}'#{locale}'#{value}" | render_subtypes(subtypes)]
+  end
+
+  defp render_subtypes([{key, value} | subtypes]) do
+    key = String.replace(key, "_", "-")
+
+    value =
+      value
+      |> encode_header_value(:quoted_printable)
+      |> quote_if_necessary()
 
     ["#{key}=#{value}" | render_subtypes(subtypes)]
+  end
+
+  defp quote_if_necessary(value) do
+    if value =~ ~r/[\s()<>@,;:\\<\/\[\]?=]/ do
+      "\"#{value}\""
+    else
+      value
+    end
   end
 
   @doc """

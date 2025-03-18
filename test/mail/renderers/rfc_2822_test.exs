@@ -16,14 +16,55 @@ defmodule Mail.Renderers.RFC2822Test do
   end
 
   test "quotes header parameters if necessary" do
-    header = Mail.Renderers.RFC2822.render_header("Content-Disposition", ["attachment", filename: "my-test-file"])
+    header =
+      Mail.Renderers.RFC2822.render_header("Content-Disposition", [
+        "attachment",
+        filename: "my-test-file"
+      ])
+
     assert header == "Content-Disposition: attachment; filename=my-test-file"
 
-    header = Mail.Renderers.RFC2822.render_header("Content-Disposition", ["attachment", filename: "my test file"])
+    header =
+      Mail.Renderers.RFC2822.render_header("Content-Disposition", [
+        "attachment",
+        filename: "my test file"
+      ])
+
     assert header == "Content-Disposition: attachment; filename=\"my test file\""
 
-    header = Mail.Renderers.RFC2822.render_header("Content-Disposition", ["attachment", filename: "my;test;file"])
+    header =
+      Mail.Renderers.RFC2822.render_header("Content-Disposition", [
+        "attachment",
+        filename: "my;test;file"
+      ])
+
     assert header == "Content-Disposition: attachment; filename=\"my;test;file\""
+  end
+
+  test "can render headers according to rfc2231" do
+    header =
+      Mail.Renderers.RFC2822.render_header("Content-Disposition", [
+        "attachment",
+        filename: %{value: "my-test-file", encoding: "UTF-8"}
+      ])
+
+    assert header == "Content-Disposition: attachment; filename*=UTF-8''my-test-file"
+
+    header =
+      Mail.Renderers.RFC2822.render_header("Content-Disposition", [
+        "attachment",
+        filename: %{value: "my test file", encoding: "us-ascii", locale: "en"}
+      ])
+
+    assert header == "Content-Disposition: attachment; filename*=us-ascii'en'my%20test%20file"
+
+    header =
+      Mail.Renderers.RFC2822.render_header("Content-Disposition", [
+        "attachment",
+        filename: %{value: "résumé.pdf", encoding: "UTF-8", locale: "en"}
+      ])
+
+    assert header == "Content-Disposition: attachment; filename*=UTF-8'en'r%C3%A9sum%C3%A9.pdf"
   end
 
   test "address headers renders list of recipients" do
