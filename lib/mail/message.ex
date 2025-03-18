@@ -370,7 +370,7 @@ defmodule Mail.Message do
           {"filename", %{value: filename, locale: locale, encoding: encoding}}
         ]
       else
-        {"filename", filename}
+        [{"filename", filename}]
       end
 
     message
