@@ -360,10 +360,23 @@ defmodule Mail.Message do
   def put_attachment(%Mail.Message{} = message, {filename, data}, opts) do
     filename = Path.basename(filename)
 
+    headers =
+      if filename =~ ~r/[^\x00-\x7F]|\s/ do
+        encoding = Keyword.get(opts, :encoding, "UTF-8")
+        locale = Keyword.get(opts, :locale, "")
+
+        [
+          {"filename", filename},
+          {"filename", %{value: filename, locale: locale, encoding: encoding}}
+        ]
+      else
+        {"filename", filename}
+      end
+
     message
     |> put_body(data)
     |> put_content_type(mimetype(filename))
-    |> put_header(:content_disposition, ["attachment", {"filename", filename}])
+    |> put_header(:content_disposition, ["attachment" | headers])
     |> put_header(:content_transfer_encoding, :base64)
     |> merge_headers(opts)
   end
