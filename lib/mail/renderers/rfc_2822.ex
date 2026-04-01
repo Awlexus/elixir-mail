@@ -156,8 +156,16 @@ defmodule Mail.Renderers.RFC2822 do
     end
   end
 
-  defp render_address({name, email}),
-    do: "#{encode_header_value(~s("#{name}"), :quoted_printable)} <#{validate_address(email)}>"
+  defp render_address({name, email}) do
+    address = validate_address(email)
+    encoded = encode_header_value(name, :quoted_printable)
+
+    if encoded == name do
+      ~s("#{name}" <#{address}>)
+    else
+      "#{encoded} <#{address}>"
+    end
+  end
 
   defp render_address(email), do: validate_address(email)
 
@@ -229,7 +237,10 @@ defmodule Mail.Renderers.RFC2822 do
 
   defp wrap_encoded_words(value) do
     :binary.split(value, "=\r\n", [:global])
-    |> Enum.map(fn chunk -> <<"=?UTF-8?Q?", chunk::binary, "?=">> end)
+    |> Enum.map(fn chunk ->
+      chunk = String.replace(chunk, " ", "_")
+      <<"=?UTF-8?Q?", chunk::binary, "?=">>
+    end)
     |> Enum.join()
   end
 
