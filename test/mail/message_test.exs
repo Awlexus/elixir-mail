@@ -268,6 +268,24 @@ defmodule Mail.MessageTest do
     assert from == parsed.headers["from"]
   end
 
+  test "UTF-8 in addresses with comma in name" do
+    from = {"Max, Müstermänn", "max@example.com"}
+    to = {"Other User", "other@example.com"}
+
+    txt =
+      Mail.build()
+      |> Mail.put_from(from)
+      |> Mail.put_to(to)
+      |> Mail.render()
+
+    # Comma must be encoded as =2C, not literal, to avoid being parsed as recipient separator
+    refute txt =~ ~r/=\?UTF-8\?Q\?[^?]*,[^?]*\?=/
+    assert txt =~ "=2C"
+
+    parsed = Mail.Parsers.RFC2822.parse(txt)
+    assert from == parsed.headers["from"]
+  end
+
   test "UTF-8 in other header" do
     file_name = "READMEüä.md"
 
@@ -277,7 +295,7 @@ defmodule Mail.MessageTest do
       |> Mail.render()
 
     encoded_header_value =
-      "=?UTF-8?Q?" <> Mail.Encoders.QuotedPrintable.encode("READMEüä.md") <> "?="
+      "=?UTF-8?Q?" <> encode_rfc2047("READMEüä.md") <> "?="
 
     assert String.contains?(message, encoded_header_value)
 
@@ -306,5 +324,8 @@ defmodule Mail.MessageTest do
     string
     |> Mail.Encoders.QuotedPrintable.encode()
     |> String.replace(" ", "_")
+    |> String.replace(~r/[^a-zA-Z0-9!#$%&'*+\-\/=?^_`{|}~]/, fn <<byte>> ->
+      "=" <> Base.encode16(<<byte>>)
+    end)
   end
 end

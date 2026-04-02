@@ -64,7 +64,7 @@ defmodule Mail.Renderers.RFC2822Test do
 
     assert Mail.Renderers.RFC2822.render_header("Subject", [
              "normal subject\r\nReply-To: cleverhacker@example.com"
-           ]) == "Subject: =?UTF-8?Q?normal_subject=0D=0AReply-To:_cleverhacker@example.com?="
+           ]) == "Subject: =?UTF-8?Q?normal_subject=0D=0AReply-To=3A_cleverhacker=40example=2Ecom?="
 
     assert Mail.Renderers.RFC2822.render_header("Subject", [
              "tabs\t\t and  spaces"

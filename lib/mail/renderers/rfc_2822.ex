@@ -238,10 +238,21 @@ defmodule Mail.Renderers.RFC2822 do
   defp wrap_encoded_words(value) do
     :binary.split(value, "=\r\n", [:global])
     |> Enum.map(fn chunk ->
-      chunk = String.replace(chunk, " ", "_")
+      chunk = encode_encoded_word_text(chunk)
       <<"=?UTF-8?Q?", chunk::binary, "?=">>
     end)
     |> Enum.join()
+  end
+
+  # Per RFC 2047 §5, encoded-words must be recognizable as atoms (RFC 2822 §3.2.4).
+  # Spaces become underscores per RFC 2047 §4.2(2).
+  # All other non-atext characters are QP-encoded.
+  defp encode_encoded_word_text(chunk) do
+    chunk
+    |> String.replace(" ", "_")
+    |> String.replace(~r/[^a-zA-Z0-9!#$%&'*+\-\/=?^_`{|}~]/, fn <<byte>> ->
+      "=" <> Base.encode16(<<byte>>)
+    end)
   end
 
   @doc """
