@@ -64,7 +64,9 @@ defmodule Mail.Renderers.RFC2822Test do
 
     assert Mail.Renderers.RFC2822.render_header("Subject", [
              "normal subject\r\nReply-To: cleverhacker@example.com"
-           ]) == "Subject: =?UTF-8?Q?normal_subject=0D=0AReply-To=3A_cleverhacker=40example=2Ecom?="
+           ]) ==
+             "Subject: =?UTF-8?Q?normal_subject=0D=0AReply-To=3A?=\r\n" <>
+               " =?UTF-8?Q?_cleverhacker=40example=2Ecom?="
 
     assert Mail.Renderers.RFC2822.render_header("Subject", [
              "tabs\t\t and  spaces"
@@ -91,7 +93,7 @@ defmodule Mail.Renderers.RFC2822Test do
         {"User 2", "user2@example.com"}
       ])
 
-    assert header == "From: user1@example.com, \"User 2\" <user2@example.com>"
+    assert header == "From: user1@example.com,\r\n \"User 2\" <user2@example.com>"
 
     header =
       Mail.Renderers.RFC2822.render_header("to", [
@@ -99,7 +101,7 @@ defmodule Mail.Renderers.RFC2822Test do
         {"User 2", "user2@example.com"}
       ])
 
-    assert header == "To: user1@example.com, \"User 2\" <user2@example.com>"
+    assert header == "To: user1@example.com,\r\n \"User 2\" <user2@example.com>"
 
     header =
       Mail.Renderers.RFC2822.render_header("cc", [
@@ -107,7 +109,7 @@ defmodule Mail.Renderers.RFC2822Test do
         {"User 2", "user2@example.com"}
       ])
 
-    assert header == "Cc: user1@example.com, \"User 2\" <user2@example.com>"
+    assert header == "Cc: user1@example.com,\r\n \"User 2\" <user2@example.com>"
 
     header =
       Mail.Renderers.RFC2822.render_header("bcc", [
@@ -115,7 +117,7 @@ defmodule Mail.Renderers.RFC2822Test do
         {"User 2", "user2@example.com"}
       ])
 
-    assert header == "Bcc: user1@example.com, \"User 2\" <user2@example.com>"
+    assert header == "Bcc: user1@example.com,\r\n \"User 2\" <user2@example.com>"
   end
 
   ["to", "cc", "bcc", "from", "reply-to"]
@@ -170,7 +172,164 @@ defmodule Mail.Renderers.RFC2822Test do
 
     header = Mail.Renderers.RFC2822.render_header("References", message_ids)
 
-    assert header == "References: #{message_ids}"
+    assert header == "References: " <> String.replace(message_ids, " ", "\r\n ")
+  end
+
+  # RFC 5322, section 3.6.4: a msg-id holds no folding whitespace, so a References header only folds
+  # between its message ids
+  test "folds a References header between its message ids" do
+    message_ids = Enum.map(1..4, &"<id-#{&1}-#{String.duplicate("c", 20)}@example.com>")
+    header = Mail.Renderers.RFC2822.render_header("References", Enum.join(message_ids, " "))
+
+    assert header ==
+             "References: <id-1-cccccccccccccccccccc@example.com>\r\n" <>
+               " <id-2-cccccccccccccccccccc@example.com>\r\n" <>
+               " <id-3-cccccccccccccccccccc@example.com>\r\n" <>
+               " <id-4-cccccccccccccccccccc@example.com>"
+
+    assert_line_length(header)
+
+    # Unfolding restores the value unchanged
+    assert Mail.Parsers.RFC2822.parse(header <> "\r\n\r\n").headers["references"] ==
+             Enum.join(message_ids, " ")
+  end
+
+  test "folds an In-Reply-To header between its message ids" do
+    header =
+      Mail.Renderers.RFC2822.render_header("in-reply-to", [
+        "<#{String.duplicate("d", 40)}@example.com>",
+        "<#{String.duplicate("e", 40)}@example.com>"
+      ])
+
+    assert header ==
+             "In-Reply-To: <dddddddddddddddddddddddddddddddddddddddd@example.com>\r\n" <>
+               " <eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@example.com>"
+
+    assert_line_length(header)
+  end
+
+  # RFC 2047, section 2 and RFC 5322, section 2.1.1
+  test "folds an address header with a long encoded name" do
+    header =
+      Mail.Renderers.RFC2822.render_header(
+        "to",
+        {"Ministerium für Wirtschaft, Tourismus, Landwirtschaft und Forsten",
+         "poststelle@example.com"}
+      )
+
+    assert header ==
+             "To: =?UTF-8?Q?Ministerium_f=C3=BCr_Wirtschaft=2C_Tourismus=2C?=\r\n" <>
+               " =?UTF-8?Q?_Landwirtschaft_und_Forsten?= <poststelle@example.com>"
+
+    assert_line_length(header)
+  end
+
+  test "folds a long subject" do
+    header =
+      Mail.Renderers.RFC2822.render_header(
+        "subject",
+        "Zusammenfassung der Sitzung über die Förderung ländlicher Räume und Wälder"
+      )
+
+    assert header ==
+             "Subject: =?UTF-8?Q?Zusammenfassung_der_Sitzung_=C3=BCber_die?=\r\n" <>
+               " =?UTF-8?Q?_F=C3=B6rderung_l=C3=A4ndlicher_R=C3=A4ume_und?=\r\n" <>
+               " =?UTF-8?Q?_W=C3=A4lder?="
+
+    assert_line_length(header)
+  end
+
+  test "renders every address on its own line" do
+    header =
+      Mail.Renderers.RFC2822.render_header("to", [
+        "user1@example.com",
+        {"User 2", "user2@example.com"},
+        "user3@example.com"
+      ])
+
+    assert header ==
+             "To: user1@example.com,\r\n" <>
+               " \"User 2\" <user2@example.com>,\r\n" <>
+               " user3@example.com"
+
+    assert [
+             "user1@example.com",
+             {"User 2", "user2@example.com"},
+             "user3@example.com"
+           ] = Mail.Parsers.RFC2822.parse(header <> "\r\n\r\n").headers["to"]
+  end
+
+  test "folds an address header between recipients" do
+    header =
+      Mail.Renderers.RFC2822.render_header("to", [
+        {"Max Müstermann", "max.muestermann@example.com"},
+        {"Erika Müstermann", "erika.muestermann@example.com"},
+        "support@example.com"
+      ])
+
+    assert header ==
+             "To: =?UTF-8?Q?Max_M=C3=BCstermann?= <max.muestermann@example.com>,\r\n" <>
+               " =?UTF-8?Q?Erika_M=C3=BCstermann?= <erika.muestermann@example.com>,\r\n" <>
+               " support@example.com"
+
+    assert_line_length(header)
+  end
+
+  test "keeps a name on the line of its address" do
+    header =
+      Mail.Renderers.RFC2822.render_header(
+        "from",
+        {"Department of Administrative Affairs and Public Service Coordination",
+         "coordination.office@example.com"}
+      )
+
+    assert header ==
+             "From: \"Department of Administrative Affairs and Public Service Coordination\"" <>
+               " <coordination.office@example.com>"
+  end
+
+  test "keeps a long encoded name on the line of its address" do
+    header =
+      Mail.Renderers.RFC2822.render_header("to", [
+        {"Amt der Oberösterreichischen Landesregierung", "post@ooe.gv.at"},
+        {"Amt für Verbraucherschutz", "verbraucherschutz@example.com"}
+      ])
+
+    # Every line ends an address, so no line starts with the angle address of the line before
+    refute header =~ ~r/\r\n <[^>]+@/
+
+    assert header ==
+             "To: =?UTF-8?Q?Amt_der_Ober=C3=B6sterreichischen_Landesregierung?=" <>
+               " <post@ooe.gv.at>,\r\n" <>
+               " =?UTF-8?Q?Amt_f=C3=BCr_Verbraucherschutz?= <verbraucherschutz@example.com>"
+  end
+
+  test "does not fold a header without a fold point" do
+    subject = String.duplicate("a", 90)
+
+    assert Mail.Renderers.RFC2822.render_header("subject", subject) == "Subject: #{subject}"
+  end
+
+  test "folds every header of a rendered message within the line length" do
+    Mail.build()
+    |> Mail.put_from({"Bundesministerium für Klimaschutz, Umwelt und Energie", "bm@example.com"})
+    |> Mail.put_to([
+      {"Ministerium für Wirtschaft, Tourismus, Landwirtschaft und Forsten",
+       "poststelle@example.com"},
+      {"Amt für Verbraucherschutz", "verbraucherschutz@example.com"}
+    ])
+    |> Mail.put_subject("Förderrichtlinie für ländliche Räume – Anhörung der Träger")
+    |> Mail.put_text("Body")
+    |> Mail.render()
+    |> String.split("\r\n\r\n", parts: 2)
+    |> hd()
+    |> assert_line_length()
+  end
+
+  defp assert_line_length(headers) do
+    for line <- String.split(headers, "\r\n") do
+      assert byte_size(line) <= 78, "line of #{byte_size(line)} bytes: #{line}"
+    end
   end
 
   test "headers - renders all headers" do

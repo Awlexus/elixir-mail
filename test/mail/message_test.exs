@@ -304,6 +304,23 @@ defmodule Mail.MessageTest do
            } = Mail.Parsers.RFC2822.parse(message)
   end
 
+  test "long UTF-8 in filename" do
+    file_name = "Änderungsbescheid über die Gebührenordnung für Amtshandlungen 2026.pdf"
+
+    message =
+      Mail.build()
+      |> Mail.put_attachment({file_name, "data"})
+      |> Mail.render()
+
+    for line <- String.split(message, "\r\n") do
+      assert byte_size(line) <= 78
+    end
+
+    assert %Mail.Message{
+             headers: %{"content-disposition" => ["attachment", {"filename", ^file_name}]}
+           } = Mail.Parsers.RFC2822.parse(message)
+  end
+
   test "long UTF-8 in subject" do
     subject =
       "über alles\nnew ?= line some очень-очень-очень-очень-очень-очень-очень-очень-очень-очень-очень-очень long line"
@@ -313,10 +330,15 @@ defmodule Mail.MessageTest do
       |> Mail.put_subject(subject)
       |> Mail.render()
 
-    encoded_subject =
-      "=?UTF-8?Q?=C3=BCber_alles=0Anew_=3F=3D_line_some_=D0=BE=D1=87=D0=B5=D0=BD?==?UTF-8?Q?=D1=8C-=D0=BE=D1=87=D0=B5=D0=BD=D1=8C-=D0=BE=D1=87=D0=B5=D0=BD?==?UTF-8?Q?=D1=8C-=D0=BE=D1=87=D0=B5=D0=BD=D1=8C-=D0=BE=D1=87=D0=B5=D0=BD?==?UTF-8?Q?=D1=8C-=D0=BE=D1=87=D0=B5=D0=BD=D1=8C-=D0=BE=D1=87=D0=B5=D0=BD?==?UTF-8?Q?=D1=8C-=D0=BE=D1=87=D0=B5=D0=BD=D1=8C-=D0=BE=D1=87=D0=B5=D0=BD?==?UTF-8?Q?=D1=8C-=D0=BE=D1=87=D0=B5=D0=BD=D1=8C-=D0=BE=D1=87=D0=B5=D0=BD?==?UTF-8?Q?=D1=8C-=D0=BE=D1=87=D0=B5=D0=BD=D1=8C_long_line?="
+    [header_block | _body] = String.split(txt, "\r\n\r\n", parts: 2)
 
-    assert String.contains?(txt, encoded_subject)
+    # Adjacent encoded words are separated by a fold (RFC 2047§2, RFC 5322§2.1.1)
+    assert txt =~ "?=\r\n =?UTF-8?Q?"
+
+    for line <- String.split(header_block, "\r\n") do
+      assert byte_size(line) <= 78
+    end
+
     assert %Mail.Message{headers: %{"subject" => ^subject}} = Mail.Parsers.RFC2822.parse(txt)
   end
 

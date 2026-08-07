@@ -21,6 +21,20 @@ defmodule Mail.Renderers.RFC2822 do
   @blacklisted_headers ["bcc"]
   @address_types ["From", "To", "Reply-To", "Cc", "Bcc"]
 
+  # https://tools.ietf.org/html/rfc5322#section-2.1.1
+  @max_line_length 78
+
+  # A msg-id must stay intact, so these headers are not encoded (RFC 2047 §5.3)
+  @unencoded_headers [
+    # RFC 5322
+    "Message-Id",
+    "In-Reply-To",
+    "References",
+    "Resent-Message-Id",
+    # RFC 2045
+    "Content-Id"
+  ]
+
   # https://tools.ietf.org/html/rfc2822#section-3.4.1
   @email_validation_regex Application.compile_env(
                             :mail,
@@ -94,17 +108,19 @@ defmodule Mail.Renderers.RFC2822 do
       |> Enum.map(&String.capitalize(&1))
       |> Enum.join("-")
 
-    key <> ": " <> render_header_value(key, value)
+    fold_header(key, render_header_value(key, value))
   end
 
   defp render_header_value("Date", date_time),
     do: timestamp_from_datetime(date_time)
 
+  # Every address goes on a line of its own
   defp render_header_value(address_type, addresses)
        when is_list(addresses) and address_type in @address_types,
        do:
-         Enum.map(addresses, &render_address(&1))
-         |> Enum.join(", ")
+         addresses
+         |> Enum.map(&render_address(&1))
+         |> Enum.join(",\r\n ")
 
   defp render_header_value(address_type, address) when address_type in @address_types,
     do: render_address(address)
@@ -118,16 +134,7 @@ defmodule Mail.Renderers.RFC2822 do
     render_header_value(key, value)
   end
 
-  defp render_header_value(header, value)
-       when header in [
-              # RFC 5322
-              "Message-Id",
-              "In-Reply-To",
-              "References",
-              "Resent-Message-Id",
-              # RFC 2045
-              "Content-Id"
-            ] do
+  defp render_header_value(header, value) when header in @unencoded_headers do
     value
     |> List.wrap()
     |> Enum.map(&to_string/1)
@@ -214,14 +221,11 @@ defmodule Mail.Renderers.RFC2822 do
     |> Enum.join("\r\n")
   end
 
-  # As stated at https://datatracker.ietf.org/doc/html/rfc2047#section-2, encoded words must be
-  # split in 76 chars including its surroundings and delimmiters.
-  # Since enclosing starts with =?UTF-8?Q? and ends with ?=, max length should be 64
   # Per RFC 2047, encoding is only required for non-ASCII characters and control
   # characters.  Ordinary ASCII-only headers should not be encoded, regardless of length.
   defp encode_header_value(header_value, :quoted_printable) do
     if requires_encoding?(header_value) do
-      header_value |> Mail.Encoders.QuotedPrintable.encode(64) |> wrap_encoded_words()
+      Mail.Encoders.EncodedWord.encode(header_value)
     else
       header_value
     end
@@ -235,25 +239,74 @@ defmodule Mail.Renderers.RFC2822 do
   defp requires_encoding?(<<byte, _rest::binary>>) when byte < 32 and byte != ?\t, do: true
   defp requires_encoding?(<<_byte, rest::binary>>), do: requires_encoding?(rest)
 
-  defp wrap_encoded_words(value) do
-    :binary.split(value, "=\r\n", [:global])
-    |> Enum.map(fn chunk ->
-      chunk = encode_encoded_word_text(chunk)
-      <<"=?UTF-8?Q?", chunk::binary, "?=">>
+  # Wraps a header onto continuation lines within the line length of RFC 5322 §2.1.1. The CRLF goes
+  # in front of the whitespace that separates two tokens, so that unfolding restores the value
+  # unchanged. A token longer than the line length has no fold point and stays as it is, which keeps
+  # a msg-id intact.
+  defp fold_header(key, value) do
+    value
+    |> fold_segments()
+    |> Enum.reduce(key <> ": ", fn {whitespace, token}, folded ->
+      if fold?(key, folded, whitespace, token) do
+        folded <> "\r\n" <> whitespace <> token
+      else
+        folded <> whitespace <> token
+      end
     end)
-    |> Enum.join()
   end
 
-  # Per RFC 2047 §5, encoded-words must be recognizable as atoms (RFC 2822 §3.2.4).
-  # Spaces become underscores per RFC 2047 §4.2(2).
-  # All other non-atext characters are QP-encoded.
-  defp encode_encoded_word_text(chunk) do
-    chunk
-    |> String.replace(" ", "_")
-    |> String.replace(~r/[^a-zA-Z0-9!#$%&'*+\-\/=?^_`{|}~]/, fn <<byte>> ->
-      "=" <> Base.encode16(<<byte>>)
-    end)
+  defp fold?(key, folded, whitespace, token) do
+    whitespace != "" and token != "" and not angle_address?(key, token) and
+      line_length(folded) + byte_size(whitespace) + byte_size(token) > @max_line_length
   end
+
+  # An address header is only folded between its addresses and within an encoded name, so that the
+  # name and the address of one recipient stay on the same line
+  defp angle_address?(key, token),
+    do: key in @address_types and String.starts_with?(token, "<")
+
+  # The length of the line that a header ends on, which is the whole header until it is folded
+  defp line_length(folded) do
+    folded
+    |> :binary.split("\r\n", [:global])
+    |> List.last()
+    |> byte_size()
+  end
+
+  # Splits a rendered header value into `{whitespace, token}` segments. Whitespace within a quoted
+  # string is no fold point, so quoted names and quoted parameters keep their spaces on one line.
+  defp fold_segments(value), do: fold_segments(value, "", "", [], false)
+
+  defp fold_segments(<<>>, whitespace, token, segments, _in_quotes),
+    do: Enum.reverse([{whitespace, token} | segments])
+
+  defp fold_segments(<<?", rest::binary>>, whitespace, token, segments, in_quotes),
+    do: fold_segments(rest, whitespace, token <> ~s("), segments, !in_quotes)
+
+  defp fold_segments(<<char, rest::binary>>, whitespace, "", segments, false)
+       when char in [?\s, ?\t],
+       do: fold_segments(rest, whitespace <> <<char>>, "", segments, false)
+
+  defp fold_segments(<<char, rest::binary>>, whitespace, token, segments, false)
+       when char in [?\s, ?\t],
+       do: fold_segments(rest, <<char>>, "", [{whitespace, token} | segments], false)
+
+  defp fold_segments(<<char, rest::binary>>, whitespace, token, segments, true)
+       when char in [?\s, ?\t] do
+    if between_encoded_words?(token, rest) do
+      fold_segments(rest, <<char>>, "", [{whitespace, token} | segments], true)
+    else
+      fold_segments(rest, whitespace, token <> <<char>>, segments, true)
+    end
+  end
+
+  defp fold_segments(<<char, rest::binary>>, whitespace, token, segments, in_quotes),
+    do: fold_segments(rest, whitespace, token <> <<char>>, segments, in_quotes)
+
+  # RFC 2047 §6.2 ignores the whitespace between two adjacent encoded words, so a fold there leaves
+  # the value unchanged even within a quoted string, where a fold is otherwise avoided.
+  defp between_encoded_words?(token, rest),
+    do: String.ends_with?(token, "?=") and String.starts_with?(rest, "=?")
 
   @doc """
   Builds a RFC2822 timestamp from an Erlang timestamp
